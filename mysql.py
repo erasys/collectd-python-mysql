@@ -13,6 +13,7 @@
 #   Port 3306 (optional)
 #   User root
 #   Password xxxx
+#   Instance xxxx
 #   HeartbeatTable percona.heartbeat (optional, if using pt-heartbeat)
 #   Verbose true (optional, to enable debugging)
 #  </Module>
@@ -21,6 +22,7 @@
 #
 # Author: Chris Boulton <chris@chrisboulton.com>
 # Added metrics for Grafana Dashboards by Matej Zerovnik <matej@zunaj.si>
+# Added support for multiple instances by Filip Chabik <filip.chabik@erasys.de>
 # License: MIT (http://www.opensource.org/licenses/mit-license.php)
 #
 
@@ -35,6 +37,7 @@ MYSQL_CONFIG = {
 	'Password':       '',
 	'HeartbeatTable': '',
 	'Verbose':        False,
+	'Instance':       '',
 }
 
 MYSQL_STATUS_VARS = {
@@ -481,10 +484,12 @@ def dispatch_value(prefix, key, value, type, type_instance=None):
 		return
 	value = int(value) # safety check
 
-	val               = collectd.Values(plugin='mysql', plugin_instance=prefix)
-	val.type          = type
-	val.type_instance = type_instance
-	val.values        = [value]
+	val                 = collectd.Values(plugin='mysql', plugin_instance=prefix)
+	val.plugin          = 'mysql.%s' % MYSQL_CONFIG['Instance']
+	val.plugin_instance = prefix
+	val.type            = type
+	val.type_instance   = type_instance
+	val.values          = [value]
 	val.dispatch()
 
 def configure_callback(conf):
