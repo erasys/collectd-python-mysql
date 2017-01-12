@@ -6,7 +6,7 @@
 # all of the legacy compatibility, and favors metrics from SHOW GLOBAL STATUS
 # as opposed to SHOW ENGINE INNODB STATUS where possible.
 #
-# Configuration:
+# Configuration (repeat Module section for multiple instances):
 #  Import mysql
 #  <Module mysql>
 #   Host localhost
@@ -37,16 +37,13 @@ except ImportError:
 	COLLECTD_ENABLED=False
 import re
 import MySQLdb
+import copy
 
-MYSQL_CONFIG = {
-	'Host':           'localhost',
-	'Port':           3306,
-	'User':           'root',
-	'Password':       '',
-	'HeartbeatTable': '',
-	'Verbose':        False,
-	'Instance':       '',
-}
+
+# Verbose logging on/off. Override in config by specifying 'Verbose'.
+VERBOSE_LOGGING = False
+
+CONFIGS = []
 
 MYSQL_STATUS_VARS = {
 	'Aborted_clients': 'counter',
@@ -311,12 +308,12 @@ MYSQL_INNODB_STATUS_MATCHES = {
 	},
 }
 
-def get_mysql_conn():
+def get_mysql_conn(conf):
 	return MySQLdb.connect(
-		host=MYSQL_CONFIG['Host'],
-		port=MYSQL_CONFIG['Port'],
-		user=MYSQL_CONFIG['User'],
-		passwd=MYSQL_CONFIG['Password']
+		host=conf['host'],
+		port=conf['port'],
+		user=conf['user'],
+		passwd=conf['password']
 	)
 
 def mysql_query(conn, query):
@@ -358,7 +355,7 @@ def fetch_mysql_master_stats(conn):
 
 	return stats
 
-def fetch_mysql_slave_stats(conn):
+def fetch_mysql_slave_stats(conf, conn):
 	result    = mysql_query(conn, 'SHOW SLAVE STATUS')
 	slave_row = result.fetchone()
 	if slave_row is None:
@@ -370,12 +367,12 @@ def fetch_mysql_slave_stats(conn):
 		'slave_lag':       slave_row['Seconds_Behind_Master'] if slave_row['Seconds_Behind_Master'] != None else 0,
 	}
 
-	if MYSQL_CONFIG['HeartbeatTable']:
+	if conf['heartbeattable']:
 		query = """
 			SELECT MAX(UNIX_TIMESTAMP() - UNIX_TIMESTAMP(ts)) AS delay
 			FROM %s
 			WHERE server_id = %s
-		""" % (MYSQL_CONFIG['HeartbeatTable'], slave_row['Master_Server_Id'])
+		""" % (conf['heartbeattable'], slave_row['Master_Server_Id'])
 		result = mysql_query(conn, query)
 		row    = result.fetchone()
 		if 'delay' in row and row['delay'] != None:
@@ -482,14 +479,14 @@ def fetch_innodb_stats(conn):
 	return stats
 
 def log_verbose(msg):
-	if not MYSQL_CONFIG['Verbose']:
+	if not VERBOSE_LOGGING:
 		return
 	if COLLECTD_ENABLED:
 		collectd.info('mysql plugin: %s' % msg)
 	else:
 		print('mysql plugin: %s' % msg)
 
-def dispatch_value(prefix, key, value, type, type_instance=None):
+def dispatch_value(instance, prefix, key, value, type, type_instance=None):
 	if not type_instance:
 		type_instance = key
 
@@ -498,27 +495,60 @@ def dispatch_value(prefix, key, value, type, type_instance=None):
 		return
 	value = int(value) # safety check
 
+	plugin = 'mysql.%s' % instance if instance is not None else 'mysql'
 	if COLLECTD_ENABLED:
-		val               = collectd.Values(plugin='mysql', plugin_instance=prefix)
-		val.plugin          = 'mysql.%s' % MYSQL_CONFIG['Instance']
+		val = collectd.Values(plugin=plugin, plugin_instance=prefix)
+		val.plugin = 'mysql.%s' % instance
 		val.plugin_instance = prefix
-		val.type          = type
+		val.type = type
 		val.type_instance = type_instance
-		val.values        = [value]
+		val.values = [value]
 		val.dispatch()
 
 def configure_callback(conf):
-	global MYSQL_CONFIG
+	instance = None
+	host = 'localhost'
+	port = 3306
+	user = 'root'
+	password = ''
+	heartbeattable = ''
+
 	for node in conf.children:
-		if node.key in MYSQL_CONFIG:
-			MYSQL_CONFIG[node.key] = node.values[0]
+		key = node.key.lower()
+		val = node.values[0]
+		if key == 'instance':
+			instance = val
+		elif key == 'host':
+			host = val
+		elif key == 'port':
+			port = int(val)
+		elif key == 'user':
+			user = val
+		elif key == 'password':
+			password = val
+		elif key == 'heartbeattable':
+			heartbeattable = val
+		elif key == 'verbose':
+			global VERBOSE_LOGGING
+			VERBOSE_LOGGING = bool(val) or VERBOSE_LOGGING
+		else:
+			collectd.warning('mysql plugin: Unknown config key: %s.' % key)
 
-	MYSQL_CONFIG['Port']    = int(MYSQL_CONFIG['Port'])
-	MYSQL_CONFIG['Verbose'] = bool(MYSQL_CONFIG['Verbose'])
+	log_verbose('Configured with host=%s, port=%s, instance name=%s, user=%s' % ( host, port, instance, user))
 
-def read_callback():
+	mysql_config = {
+		'instance': instance,
+		'host': host,
+		'port': port,
+		'user': user,
+		'password': password,
+		'heartbeattable': heartbeattable
+	}
+	CONFIGS.append(mysql_config)
+
+def get_metrics(conf):
 	global MYSQL_STATUS_VARS
-	conn = get_mysql_conn()
+	conn = get_mysql_conn(conf)
 
 	mysql_status = fetch_mysql_status(conn)
 	for key in mysql_status:
@@ -534,33 +564,37 @@ def read_callback():
 		else:
 			continue
 
-		dispatch_value('status', key, mysql_status[key], ds_type)
+		dispatch_value(conf['instance'], 'status', key, mysql_status[key], ds_type)
 
 	mysql_variables = fetch_mysql_variables(conn)
 	for key in mysql_variables:
-		dispatch_value('variables', key, mysql_variables[key], 'gauge')
+		dispatch_value(conf['instance'], 'variables', key, mysql_variables[key], 'gauge')
 
 	mysql_master_status = fetch_mysql_master_stats(conn)
 	for key in mysql_master_status:
-		dispatch_value('master', key, mysql_master_status[key], 'gauge')
+		dispatch_value(conf['instance'], 'master', key, mysql_master_status[key], 'gauge')
 
 	mysql_states = fetch_mysql_process_states(conn)
 	for key in mysql_states:
-		dispatch_value('state', key, mysql_states[key], 'gauge')
+		dispatch_value(conf['instance'], 'state', key, mysql_states[key], 'gauge')
 
-	slave_status = fetch_mysql_slave_stats(conn)
+	slave_status = fetch_mysql_slave_stats(conf, conn)
 	for key in slave_status:
-		dispatch_value('slave', key, slave_status[key], 'gauge')
+		dispatch_value(conf['instance'], 'slave', key, slave_status[key], 'gauge')
 
 	response_times = fetch_mysql_response_times(conn)
 	for key in response_times:
-		dispatch_value('response_time_total', str(key), response_times[key]['total'], 'counter')
-		dispatch_value('response_time_count', str(key), response_times[key]['count'], 'counter')
+		dispatch_value(conf['instance'], 'response_time_total', str(key), response_times[key]['total'], 'counter')
+		dispatch_value(conf['instance'], 'response_time_count', str(key), response_times[key]['count'], 'counter')
 
 	innodb_status = fetch_innodb_stats(conn)
 	for key in MYSQL_INNODB_STATUS_VARS:
 		if key not in innodb_status: continue
-		dispatch_value('innodb', key, innodb_status[key], MYSQL_INNODB_STATUS_VARS[key])
+		dispatch_value(conf['instance'], 'innodb', key, innodb_status[key], MYSQL_INNODB_STATUS_VARS[key])
+
+def read_callback():
+	for conf in CONFIGS:
+		get_metrics(conf)
 
 if COLLECTD_ENABLED:
 	 collectd.register_read(read_callback)
@@ -569,13 +603,18 @@ if COLLECTD_ENABLED:
 if __name__ == "__main__" and not COLLECTD_ENABLED:
 	print "Running in test mode, invoke with"
 	print sys.argv[0] + " Host Port User Password "
-	MYSQL_CONFIG['Host'] = sys.argv[1]
-	MYSQL_CONFIG['Port'] = int(sys.argv[2])
-	MYSQL_CONFIG['User'] = sys.argv[3]
-	MYSQL_CONFIG['Password'] = sys.argv[4]
-	MYSQL_CONFIG['Verbose'] = True
+	mysql_config = {
+       'instance': sys.argv[5] if len(sys.argv) > 5 else 'slave',
+       'host': sys.argv[1],
+       'port': int(sys.argv[2]),
+       'user': sys.argv[3],
+       'password': sys.argv[4],
+       'heartbeattable': '',
+	}
+	VERBOSE_LOGGING = True
+	CONFIGS.append(mysql_config)
 	from pprint import pprint as pp
-	pp(MYSQL_CONFIG)
+	pp(mysql_config)
 	read_callback()
 
 
