@@ -356,30 +356,29 @@ def fetch_mysql_master_stats(conn):
 	return stats
 
 def fetch_mysql_slave_stats(conf, conn):
-	result    = mysql_query(conn, 'SHOW SLAVE STATUS')
-	slave_row = result.fetchone()
-	if slave_row is None:
-		return {}
+	result    = mysql_query(conn, 'SHOW ALL SLAVES STATUS')
+	status = {}
+	for slave_row in result.fetchall():
+		connection = slave_row['Connection_name']
+		status[connection] = {
+			'relay_log_space': slave_row['Relay_Log_Space'],
+			'last_errno':      slave_row['Last_Errno'],
+			'slave_lag':       slave_row['Seconds_Behind_Master'] if slave_row['Seconds_Behind_Master'] != None else 0,
+		}
 
-	status = {
-		'relay_log_space': slave_row['Relay_Log_Space'],
-		'last_errno':      slave_row['Last_Errno'],
-		'slave_lag':       slave_row['Seconds_Behind_Master'] if slave_row['Seconds_Behind_Master'] != None else 0,
-	}
+		if conf['heartbeattable']:
+			query = """
+				SELECT MAX(UNIX_TIMESTAMP() - UNIX_TIMESTAMP(ts)) AS delay
+				FROM %s
+				WHERE server_id = %s
+			""" % (conf['heartbeattable'], slave_row['Master_Server_Id'])
+			result = mysql_query(conn, query)
+			row    = result.fetchone()
+			if 'delay' in row and row['delay'] != None:
+				status[connection]['slave_lag'] = row['delay']
 
-	if conf['heartbeattable']:
-		query = """
-			SELECT MAX(UNIX_TIMESTAMP() - UNIX_TIMESTAMP(ts)) AS delay
-			FROM %s
-			WHERE server_id = %s
-		""" % (conf['heartbeattable'], slave_row['Master_Server_Id'])
-		result = mysql_query(conn, query)
-		row    = result.fetchone()
-		if 'delay' in row and row['delay'] != None:
-			status['slave_lag'] = row['delay']
-
-	status['slave_sql_running'] = 1 if slave_row['Slave_SQL_Running'] == 'Yes' else 0
-	status['slave_io_running'] = 1 if slave_row['Slave_IO_Running'] == 'Yes' else 0
+		status[connection]['slave_sql_running'] = 1 if slave_row['Slave_SQL_Running'] == 'Yes' else 0
+		status[connection]['slave_io_running'] = 1 if slave_row['Slave_IO_Running'] == 'Yes' else 0
 	return status
 
 def fetch_mysql_process_states(conn):
@@ -579,8 +578,10 @@ def get_metrics(conf):
 		dispatch_value(conf['instance'], 'state', key, mysql_states[key], 'gauge')
 
 	slave_status = fetch_mysql_slave_stats(conf, conn)
-	for key in slave_status:
-		dispatch_value(conf['instance'], 'slave', key, slave_status[key], 'gauge')
+	for connection in slave_status:
+		for key in slave_status[connection]:
+			prefix = ('slave_%s' % connection).strip('_')
+			dispatch_value(conf['instance'], prefix, key, slave_status[connection][key], 'gauge')
 
 	response_times = fetch_mysql_response_times(conn)
 	for key in response_times:
