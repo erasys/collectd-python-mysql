@@ -26,7 +26,15 @@
 # License: MIT (http://www.opensource.org/licenses/mit-license.php)
 #
 
-import collectd
+import sys
+
+COLLECTD_ENABLED=True
+try:
+	import collectd
+except ImportError:
+	# We're not running in CollectD, set this to False so we can make some changes
+	# accordingly for testing/development.
+	COLLECTD_ENABLED=False
 import re
 import MySQLdb
 import copy
@@ -419,6 +427,8 @@ def fetch_mysql_response_times(conn):
 		if not row:
 			row = { 'count': 0, 'total': 0 }
 
+		row = {key.lower(): val for key, val in row.items()}
+
 		response_times[i] = {
 			'time':  float(row['time']),
 			'count': int(row['count']),
@@ -459,7 +469,8 @@ def fetch_innodb_stats(conn):
 				for key in MYSQL_INNODB_STATUS_MATCHES[match]:
 					value = MYSQL_INNODB_STATUS_MATCHES[match][key]
 					if type(value) is int:
-						stats[key] = int(row[value])
+						if value < len(row) and row[value].isdigit():
+							stats[key] = int(row[value])
 					else:
 						stats[key] = value(row, stats)
 				break
@@ -467,8 +478,12 @@ def fetch_innodb_stats(conn):
 	return stats
 
 def log_verbose(msg):
-	if VERBOSE_LOGGING:
+	if not MYSQL_CONFIG['Verbose']:
+		return
+	if COLLECTD_ENABLED:
 		collectd.info('mysql plugin: %s' % msg)
+	else:
+		print('mysql plugin: %s' % msg)
 
 def dispatch_value(instance, prefix, key, value, type, type_instance=None):
 	if not type_instance:
@@ -477,17 +492,22 @@ def dispatch_value(instance, prefix, key, value, type, type_instance=None):
 	log_verbose('Sending value: %s/%s=%s' % (prefix, type_instance, value))
 	if value is None:
 		return
-	value = int(value) # safety check
+	try:
+		value = int(value)
+	except ValueError:
+		value = float(value)
 
 	if instance is None:
 		plugin = 'mysql'
 	else:
 		plugin = 'mysql.%s' % instance
-	val                 = collectd.Values(plugin=plugin, plugin_instance=prefix)
-	val.type            = type
-	val.type_instance   = type_instance
-	val.values          = [value]
-	val.dispatch()
+
+	if COLLECTD_ENABLED:
+		val               = collectd.Values(plugin=plugin, plugin_instance=prefix)
+		val.type          = type
+		val.type_instance = type_instance
+		val.values        = [value]
+		val.dispatch()
 
 def configure_callback(conf):
 	instance = None
@@ -583,7 +603,21 @@ def read_callback():
 	for conf in CONFIGS:
 		get_metrics(conf)
 
-collectd.register_read(read_callback)
-collectd.register_config(configure_callback)
+if COLLECTD_ENABLED:
+	 collectd.register_read(read_callback)
+	 collectd.register_config(configure_callback)
+
+if __name__ == "__main__" and not COLLECTD_ENABLED:
+	print "Running in test mode, invoke with"
+	print sys.argv[0] + " Host Port User Password "
+	MYSQL_CONFIG['Host'] = sys.argv[1]
+	MYSQL_CONFIG['Port'] = int(sys.argv[2])
+	MYSQL_CONFIG['User'] = sys.argv[3]
+	MYSQL_CONFIG['Password'] = sys.argv[4]
+	MYSQL_CONFIG['Verbose'] = True
+	from pprint import pprint as pp
+	pp(MYSQL_CONFIG)
+	read_callback()
+
 
 # vim:noexpandtab ts=8 sw=8 sts=8
