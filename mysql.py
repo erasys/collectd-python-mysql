@@ -28,17 +28,16 @@
 
 import sys
 
-COLLECTD_ENABLED=True
+COLLECTD_ENABLED = True
 try:
 	import collectd
 except ImportError:
 	# We're not running in CollectD, set this to False so we can make some changes
 	# accordingly for testing/development.
-	COLLECTD_ENABLED=False
+	COLLECTD_ENABLED = False
 import re
 import MySQLdb
 import copy
-
 
 # Verbose logging on/off. Override in config by specifying 'Verbose'.
 VERBOSE_LOGGING = False
@@ -332,7 +331,8 @@ def fetch_mysql_status(conn):
 		status['Innodb_unpurged_txns'] = int(status['Innodb_max_trx_id']) - int(status['Innodb_purge_trx_id'])
 
 	if 'Innodb_lsn_last_checkpoint' in status:
-		status['Innodb_uncheckpointed_bytes'] = int(status['Innodb_lsn_current'])- int(status['Innodb_lsn_last_checkpoint'])
+		status['Innodb_uncheckpointed_bytes'] = int(status['Innodb_lsn_current']) \
+												- int(status['Innodb_lsn_last_checkpoint'])
 
 	if 'Innodb_lsn_flushed' in status:
 		status['Innodb_unflushed_log'] = int(status['Innodb_lsn_current']) - int(status['Innodb_lsn_flushed'])
@@ -356,14 +356,14 @@ def fetch_mysql_master_stats(conn):
 	return stats
 
 def fetch_mysql_slave_stats(conf, conn):
-	result    = mysql_query(conn, 'SHOW ALL SLAVES STATUS')
+	result = mysql_query(conn, 'SHOW ALL SLAVES STATUS')
 	status = {}
 	for slave_row in result.fetchall():
 		connection = slave_row['Connection_name']
 		status[connection] = {
 			'relay_log_space': slave_row['Relay_Log_Space'],
 			'last_errno':      slave_row['Last_Errno'],
-			'slave_lag':       slave_row['Seconds_Behind_Master'] if slave_row['Seconds_Behind_Master'] != None else 0,
+			'slave_lag':       slave_row.get('Seconds_Behind_Master', 0)
 		}
 
 		if conf['heartbeattable']:
@@ -373,13 +373,14 @@ def fetch_mysql_slave_stats(conf, conn):
 				WHERE server_id = %s
 			""" % (conf['heartbeattable'], slave_row['Master_Server_Id'])
 			result = mysql_query(conn, query)
-			row    = result.fetchone()
+			row = result.fetchone()
 			if 'delay' in row and row['delay'] != None:
 				status[connection]['slave_lag'] = row['delay']
 
 		status[connection]['slave_sql_running'] = 1 if slave_row['Slave_SQL_Running'] == 'Yes' else 0
 		status[connection]['slave_io_running'] = 1 if slave_row['Slave_IO_Running'] == 'Yes' else 0
 	return status
+
 
 def fetch_mysql_process_states(conn):
 	global MYSQL_PROCESS_STATES
@@ -395,6 +396,7 @@ def fetch_mysql_process_states(conn):
 
 	return states
 
+
 def fetch_mysql_variables(conn):
 	global MYSQL_VARS
 	result = mysql_query(conn, 'SHOW GLOBAL VARIABLES')
@@ -407,6 +409,7 @@ def fetch_mysql_variables(conn):
 				variables[row['Variable_name']] = row['Value']
 
 	return variables
+
 
 def fetch_mysql_response_times(conn):
 	response_times = {}
@@ -425,28 +428,29 @@ def fetch_mysql_response_times(conn):
 
 		# fill in missing rows with zeros
 		if not row:
-			row = { 'count': 0, 'total': 0 }
+			row = {'count': 0, 'total': 0}
 
 		row = {key.lower(): val for key, val in row.items()}
 
 		response_times[i] = {
-			'time':  float(row['time']),
+			'time': float(row['time']),
 			'count': int(row['count']),
 			'total': round(float(row['total']) * 1000000, 0),
 		}
 
 	return response_times
 
+
 def fetch_innodb_stats(conn):
 	global MYSQL_INNODB_STATUS_MATCHES, MYSQL_INNODB_STATUS_VARS
 	result = mysql_query(conn, 'SHOW ENGINE INNODB STATUS')
-	row    = result.fetchone()
+	row = result.fetchone()
 	status = row['Status']
-	stats  = dict.fromkeys(MYSQL_INNODB_STATUS_VARS.keys(), 0)
+	stats = dict.fromkeys(MYSQL_INNODB_STATUS_VARS.keys(), 0)
 
 	for line in status.split("\n"):
 		line = line.strip()
-		row  = re.split(r' +', re.sub(r'[,;] ', ' ', line))
+		row = re.split(r' +', re.sub(r'[,;] ', ' ', line))
 		if line == '': continue
 
 		# ---TRANSACTION 124324402462, not started
@@ -477,13 +481,15 @@ def fetch_innodb_stats(conn):
 
 	return stats
 
+
 def log_verbose(msg):
-	if not MYSQL_CONFIG['Verbose']:
+	if not VERBOSE_LOGGING:
 		return
 	if COLLECTD_ENABLED:
 		collectd.info('mysql plugin: %s' % msg)
 	else:
 		print('mysql plugin: %s' % msg)
+
 
 def dispatch_value(instance, prefix, key, value, type, type_instance=None):
 	if not type_instance:
@@ -503,11 +509,12 @@ def dispatch_value(instance, prefix, key, value, type, type_instance=None):
 		plugin = 'mysql.%s' % instance
 
 	if COLLECTD_ENABLED:
-		val               = collectd.Values(plugin=plugin, plugin_instance=prefix)
-		val.type          = type
+		val = collectd.Values(plugin=plugin, plugin_instance=prefix)
+		val.type = type
 		val.type_instance = type_instance
-		val.values        = [value]
+		val.values = [value]
 		val.dispatch()
+
 
 def configure_callback(conf):
 	instance = None
@@ -516,7 +523,6 @@ def configure_callback(conf):
 	user = 'root'
 	password = ''
 	heartbeattable = ''
-	verbose = False
 
 	for node in conf.children:
 		key = node.key.lower()
@@ -539,7 +545,7 @@ def configure_callback(conf):
 		else:
 			collectd.warning('mysql plugin: Unknown config key: %s.' % key)
 
-	log_verbose('Configured with host=%s, port=%s, instance name=%s, user=%s' % ( host, port, instance, user))
+	log_verbose('Configured with host=%s, port=%s, instance name=%s, user=%s' % (host, port, instance, user))
 
 	mysql_config = {
 		'instance': instance,
@@ -550,6 +556,7 @@ def configure_callback(conf):
 		'heartbeattable': heartbeattable
 	}
 	CONFIGS.append(mysql_config)
+
 
 def get_metrics(conf):
 	global MYSQL_STATUS_VARS
@@ -599,25 +606,32 @@ def get_metrics(conf):
 		if key not in innodb_status: continue
 		dispatch_value(conf['instance'], 'innodb', key, innodb_status[key], MYSQL_INNODB_STATUS_VARS[key])
 
+
 def read_callback():
 	for conf in CONFIGS:
 		get_metrics(conf)
 
+
 if COLLECTD_ENABLED:
-	 collectd.register_read(read_callback)
-	 collectd.register_config(configure_callback)
+	collectd.register_read(read_callback)
+	collectd.register_config(configure_callback)
 
 if __name__ == "__main__" and not COLLECTD_ENABLED:
 	print "Running in test mode, invoke with"
 	print sys.argv[0] + " Host Port User Password "
-	MYSQL_CONFIG['Host'] = sys.argv[1]
-	MYSQL_CONFIG['Port'] = int(sys.argv[2])
-	MYSQL_CONFIG['User'] = sys.argv[3]
-	MYSQL_CONFIG['Password'] = sys.argv[4]
-	MYSQL_CONFIG['Verbose'] = True
+	mysql_config = {
+		'instance': sys.argv[5] if len(sys.argv) > 5 else 'slave',
+		'host': sys.argv[1],
+		'port': int(sys.argv[2]),
+		'user': sys.argv[3],
+		'password': sys.argv[4],
+		'heartbeattable': '',
+	}
+	VERBOSE_LOGGING = True
+	CONFIGS.append(mysql_config)
 	from pprint import pprint as pp
-	pp(MYSQL_CONFIG)
+
+	pp(mysql_config)
 	read_callback()
 
-
-# vim:noexpandtab ts=8 sw=8 sts=8
+	# vim:noexpandtab ts=8 sw=8 sts=8
