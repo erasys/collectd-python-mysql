@@ -560,11 +560,11 @@ def configure_callback(conf):
 
 
 def get_metrics(conf):
+	instance = conf['instance']
 	global MYSQL_STATUS_VARS
 	conn = get_mysql_conn(conf)
 
 	mysql_status = fetch_mysql_status(conn)
-	instance = conf['instance']
 	for key in mysql_status:
 		if mysql_status[key] == '': mysql_status[key] = 0
 
@@ -620,9 +620,9 @@ if COLLECTD_ENABLED:
 
 if __name__ == "__main__" and not COLLECTD_ENABLED:
 	print "Running in test mode, invoke with"
-	print sys.argv[0] + " Host Port User Password "
+	print sys.argv[0] + " Host Port User Password Instance"
 	mysql_config = {
-		'instance': sys.argv[5] if len(sys.argv) > 5 else 'slave',
+		'instance': sys.argv[5] if len(sys.argv) > 5 else '',
 		'heartbeattable': '',
 		'host': sys.argv[1],
 		'port': int(sys.argv[2]),
